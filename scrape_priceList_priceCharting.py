@@ -1,124 +1,121 @@
-import requests
-from bs4 import BeautifulSoup
-import json
-import time
 import os
+import glob
+from bs4 import BeautifulSoup
+import sqlite3
+import pathlib
+import urllib.parse
 
-def scrape_console(url, code):
+def parse_html_file(filepath):
     base_url = "https://www.pricecharting.com"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    code = os.path.splitext(os.path.basename(filepath))[0]
     
+    code_mapping = {
+        "Checklist_ PAL Nintendo 64 Video Games": "NIN_N64",
+        "Checklist_ PAL Gamecube Video Games": "NIN_GC",
+        "Checklist_ PAL NES Video Games": "NIN_NES",
+        "Checklist_ PAL Super Nintendo Video Games": "NIN_SNES"
+    }
+    code = code_mapping.get(code, code)
+
     data = []
     
-    print(f"\n--- Scraping {code} from {url} ---")
-    print(f"Fetching first page...")
+    print(f"\n--- Parsing local file {filepath} (Code: {code}) ---")
+
     try:
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching the page: {e}")
+        with open(filepath, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+    except Exception as e:
+        print(f"Error reading {filepath}: {e}")
         return
 
-    while True:
-        soup = BeautifulSoup(response.text, 'html.parser')
-        table = soup.find('table', id='games_table')
+    soup = BeautifulSoup(html_content, 'html.parser')
+    table = soup.find('table', id='games_table')
 
-        if not table:
-            print("Could not find the games table on the page.")
-            break
+    if not table:
+        print(f"Could not find the games table in {filepath}.")
+        return
 
-        rows = table.find('tbody').find_all('tr') if table.find('tbody') else table.find_all('tr')
-        page_count = 0
+    rows = table.find('tbody').find_all('tr') if table.find('tbody') else table.find_all('tr')
+    page_count = 0
 
-        for row in rows:
-            title_td = row.find('td', class_='title')
-            loose_td = row.find('td', class_='used_price')
-            cib_td = row.find('td', class_='cib_price')
+    for row in rows:
+        title_td = row.find('td', class_='title')
+        loose_td = row.find('td', class_='used_price')
+        cib_td = row.find('td', class_='cib_price')
 
-            if title_td:
-                title = title_td.text.strip()
-                loose_price = loose_td.text.strip() if loose_td else ""
-                cib_price = cib_td.text.strip() if cib_td else ""
+        if title_td:
+            title = title_td.text.strip()
+            loose_price = loose_td.text.strip() if loose_td else ""
+            cib_price = cib_td.text.strip() if cib_td else ""
+
+            a_tag = title_td.find('a')
+            game_url = urllib.parse.urljoin(base_url, a_tag.get('href')) if a_tag and a_tag.get('href') else ""
+
+            if title.lower() == "title" or not title:
+                continue
                 
-                a_tag = title_td.find('a')
-                game_url = base_url + a_tag.get('href') if a_tag and a_tag.get('href') else ""
+            owned = 1 if 'in Collection' in row.text or 'In Collection' in row.text else 0
 
-                if title.lower() == "title" or not title:
-                    continue
+            data.append({
+                "title": title,
+                "loose_price": loose_price,
+                "cib_price": cib_price,
+                "url": game_url,
+                "owned": owned
+            })
+            page_count += 1
 
-                data.append({
-                    "title": title,
-                    "loose_price": loose_price,
-                    "cib_price": cib_price,
-                    "url": game_url
-                })
-                page_count += 1
-                
-        print(f"Extracted {page_count} items from this page.")
+    print(f"Extracted {page_count} items from {filepath}.")
 
-        # Check for next page
-        next_form = soup.find('form', class_='next_page')
-        if next_form:
-            cursor_input = next_form.find('input', {'name': 'cursor'})
-            if cursor_input and cursor_input.get('value'):
-                cursor = cursor_input.get('value')
-                print(f"Found next page cursor: {cursor}. Fetching...")
-                
-                # Extract other hidden inputs to send with the POST request
-                post_data = {}
-                for input_tag in next_form.find_all('input', type='hidden'):
-                    post_data[input_tag.get('name')] = input_tag.get('value')
-                
-                # Small delay to be polite
-                time.sleep(1)
-                
-                try:
-                    response = requests.post(url, headers=headers, data=post_data)
-                    response.raise_for_status()
-                except requests.exceptions.RequestException as e:
-                    print(f"Error fetching next page: {e}")
-                    break
-            else:
-                break
-        else:
-            break
+    # Output to SQLite Database
+    db_path = (pathlib.Path(__file__).resolve().parent / '../sqlLite/ads.db').resolve()
 
-    # Output as JSON
-    output_filename = f"priceList_{code}.json"
-    with open(output_filename, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4)
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    for item in data:
+        cursor.execute('''
+            INSERT INTO pricecharting_data (console_code, title, loose_price, cib_price, url, owned)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (code, item['title'], item['loose_price'], item['cib_price'], item['url'], item['owned']))
+
+    conn.commit()
+    conn.close()
         
-    print(f"Successfully scraped a total of {len(data)} games and saved to {output_filename}")
+    print(f"Successfully saved {len(data)} games from {filepath} to the database at {db_path}")
 
 def main():
-    config_file = 'configuration_priceCharting.json'
+    # Find all HTML files in the current directory
+    html_files = glob.glob('*.html')
     
-    if not os.path.exists(config_file):
-        print(f"Configuration file {config_file} not found. Please create it.")
+    if not html_files:
+        print("No .html files found in the current directory.")
         return
         
-    try:
-        with open(config_file, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-    except json.JSONDecodeError as e:
-        print(f"Error parsing {config_file}: {e}")
-        return
-        
-    consoles = config.get('consoles', [])
+    # Setup database and clear previous entries
+    db_path = (pathlib.Path(__file__).resolve().parent / '../sqlLite/ads.db').resolve()
+    os.makedirs(db_path.parent, exist_ok=True)
     
-    if not consoles:
-        print("No consoles found in configuration.")
-        return
-        
-    for console in consoles:
-        url = console.get('url')
-        code = console.get('code')
-        
-        if not url or not code:
-            print(f"Skipping invalid entry: {console}")
-            continue
-            
-        scrape_console(url, code)
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS pricecharting_data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            console_code TEXT,
+            title TEXT,
+            loose_price TEXT,
+            cib_price TEXT,
+            url TEXT,
+            owned INTEGER
+        )
+    ''')
+    cursor.execute('DELETE FROM pricecharting_data')
+    conn.commit()
+    conn.close()
+
+    for filepath in html_files:
+        parse_html_file(filepath)
 
 if __name__ == "__main__":
     main()
