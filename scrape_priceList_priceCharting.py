@@ -4,17 +4,12 @@ from bs4 import BeautifulSoup
 import sqlite3
 import pathlib
 import urllib.parse
+import json
 
-def parse_html_file(filepath):
+def parse_html_file(filepath, code_mapping):
     base_url = "https://www.pricecharting.com"
     code = os.path.splitext(os.path.basename(filepath))[0]
     
-    code_mapping = {
-        "Checklist_ PAL Nintendo 64 Video Games": "NIN_N64",
-        "Checklist_ PAL Gamecube Video Games": "NIN_GC",
-        "Checklist_ PAL NES Video Games": "NIN_NES",
-        "Checklist_ PAL Super Nintendo Video Games": "NIN_SNES"
-    }
     code = code_mapping.get(code, code)
 
     data = []
@@ -85,6 +80,15 @@ def parse_html_file(filepath):
     print(f"Successfully saved {len(data)} games from {filepath} to the database at {db_path}")
 
 def main():
+    # Load configuration
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'console_codes.json')
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            code_mapping = json.load(f)
+    except Exception as e:
+        print(f"Error loading console_codes.json: {e}")
+        code_mapping = {}
+
     # Find all HTML files in the current directory
     html_files = glob.glob('*.html')
     
@@ -115,7 +119,7 @@ def main():
     conn.close()
 
     for filepath in html_files:
-        parse_html_file(filepath)
+        parse_html_file(filepath, code_mapping)
 
 if __name__ == "__main__":
     main()
