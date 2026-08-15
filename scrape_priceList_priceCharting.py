@@ -68,16 +68,28 @@ def parse_html_file(filepath, code_mapping):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    for item in data:
-        cursor.execute('''
-            INSERT INTO pricecharting_data (console_code, title, loose_price, cib_price, url, owned)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (code, item['title'], item['loose_price'], item['cib_price'], item['url'], item['owned']))
+    # Check if console_code exists
+    cursor.execute('SELECT COUNT(*) FROM pricecharting_data WHERE console_code = ?', (code,))
+    console_exists = cursor.fetchone()[0] > 0
+
+    if console_exists:
+        for item in data:
+            cursor.execute('''
+                UPDATE pricecharting_data
+                SET loose_price = ?, cib_price = ?, owned = ?
+                WHERE console_code = ? AND title = ?
+            ''', (item['loose_price'], item['cib_price'], item['owned'], code, item['title']))
+        print(f"Successfully updated {len(data)} games for {code} from {filepath} in the database at {db_path}")
+    else:
+        for item in data:
+            cursor.execute('''
+                INSERT INTO pricecharting_data (console_code, title, loose_price, cib_price, url, owned)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (code, item['title'], item['loose_price'], item['cib_price'], item['url'], item['owned']))
+        print(f"Successfully saved {len(data)} games from {filepath} to the database at {db_path}")
 
     conn.commit()
     conn.close()
-        
-    print(f"Successfully saved {len(data)} games from {filepath} to the database at {db_path}")
 
 def main():
     # Load configuration
@@ -114,7 +126,6 @@ def main():
             owned INTEGER
         )
     ''')
-    cursor.execute('DELETE FROM pricecharting_data')
     conn.commit()
     conn.close()
 
